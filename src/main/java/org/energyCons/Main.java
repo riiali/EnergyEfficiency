@@ -2,6 +2,7 @@ package org.energyCons;
 
 import org.energyCons.NoVisitor.WithoutVisitorPattern;
 import org.energyCons.Visitor.VisitorPattern;
+import org.json.JSONObject;
 
 import java.io.BufferedReader;
 import java.io.FileWriter;
@@ -12,39 +13,30 @@ import java.util.List;
 import java.util.Random;
 
 public class Main {
-    private static final String SHELLY_IP = "192.168.1.182"; // Cambia con l'indirizzo IP della tua Shelly Plug
+    private static final String SHELLY_IP = "192.168.1.182"; // Shelly Plug IP address
 
     public static void main(String[] args) throws IOException, InterruptedException {
-        int iterations = 1000; // Numero di iterazioni
-        int numNumbers = 1000; // Numero di numeri
+        int iterations = 1000;
+        int numNumbers = 1000;
         Random random = new Random();
         String fileName = "energy_shelly_results.csv";
         List<Integer> numbers = new ArrayList<>();
 
-        // Genera numeri casuali
         for (int i = 0; i < numNumbers; i++) {
             numbers.add(random.nextInt(100));
         }
 
-        // Intestazione CSV
         try (FileWriter writer = new FileWriter(fileName)) {
-            writer.append("Pattern,Iteration,Consumption (mW)\n");
+            writer.append("Pattern,Iteration,Apower (W),Voltage (V),Current (A),Aenergy Total (kWh),Aenergy By Minute\n");
 
-            // Azzera il consumo totale della Shelly
-            resetShellyEnergy();
-
-            // Esegui i test per Validator
             System.out.println("Running Validator...");
             double totalValidatorConsumption = runPattern("Validator", () -> VisitorPattern.sum(numbers), writer, iterations);
 
-            // Azzera il consumo totale della Shelly
-            resetShellyEnergy();
+            //resetShellyEnergy();
 
-            // Esegui i test per NonValidator
             System.out.println("Running NonValidator...");
             double totalNonValidatorConsumption = runPattern("NonValidator", () -> WithoutVisitorPattern.sum(numbers), writer, iterations);
 
-            // Stampa il consumo totale
             System.out.println("Total Validator Consumption: " + totalValidatorConsumption + " mW");
             System.out.println("Total NonValidator Consumption: " + totalNonValidatorConsumption + " mW");
         }
@@ -58,25 +50,27 @@ public class Main {
         for (int i = 1; i <= iterations; i++) {
             System.out.println("Iteration: " + i);
 
-            // Ottieni il consumo iniziale
-            double startEnergy = getShellyEnergyInMilliwatt();
-
-            // Esegui il task
+            JSONObject startData = getShellyData();
             task.run();
+            JSONObject endData = getShellyData();
 
-            // Ottieni il consumo finale
-            double endEnergy = getShellyEnergyInMilliwatt();
+            double apower = endData.getJSONObject("switch:0").getDouble("apower");
+            double voltage = endData.getJSONObject("switch:0").getDouble("voltage");
+            double current = endData.getJSONObject("switch:0").getDouble("current");
+            double aenergyTotal = endData.getJSONObject("switch:0").getJSONObject("aenergy").getDouble("total");
+            String aenergyByMinute = endData.getJSONObject("switch:0").getJSONObject("aenergy").getJSONArray("by_minute").toString();
 
-            // Calcola il consumo per questa iterazione
-            double iterationConsumption = endEnergy - startEnergy;
+            double iterationConsumption = aenergyTotal - startData.getJSONObject("switch:0").getJSONObject("aenergy").getDouble("total");
             totalConsumption += iterationConsumption;
 
-            // Scrivi i risultati nel CSV
             writer.append(patternName + ",");
             writer.append(i + ",");
-            writer.append(String.format("%.2f", iterationConsumption) + "\n");
+            writer.append(String.format("%.2f", apower) + ",");
+            writer.append(String.format("%.2f", voltage) + ",");
+            writer.append(String.format("%.2f", current) + ",");
+            writer.append(String.format("%.3f", aenergyTotal) + ",");
+            writer.append(aenergyByMinute + "\n");
 
-            // Debug output
             System.out.println("Iteration Consumption: " + iterationConsumption + " mW");
         }
 
@@ -84,18 +78,15 @@ public class Main {
     }
 
     private static void resetShellyEnergy() throws IOException, InterruptedException {
-        // Esegui il comando per azzerare il consumo totale
         String command = "curl -s http://" + SHELLY_IP + "/rpc/Shelly.ResetTotalEnergy";
         Process process = Runtime.getRuntime().exec(command);
         process.waitFor();
         System.out.println("Shelly energy reset.");
     }
 
-    private static double getShellyEnergyInMilliwatt() throws IOException, InterruptedException {
-        // Comando curl per ottenere i dati di energia
+    private static JSONObject getShellyData() throws IOException, InterruptedException {
         String command = "curl -s http://" + SHELLY_IP + "/rpc/Shelly.GetStatus";
 
-        // Esegui il comando e leggi la risposta
         Process process = Runtime.getRuntime().exec(command);
         BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
 
@@ -105,15 +96,8 @@ public class Main {
             response.append(line);
         }
 
-        process.waitFor(); // Aspetta che il processo termini
-
-        // Estrai il valore dell'energia totale dal JSON
-        String energyField = "\"total\":";
-        int startIndex = response.indexOf(energyField) + energyField.length();
-        int endIndex = response.indexOf(",", startIndex);
-        double totalEnergyWh = Double.parseDouble(response.substring(startIndex, endIndex));
-
-        // Converti da Wh a mW (1 Wh = 1000 mW/h)
-        return totalEnergyWh * 1000.0;
+        process.waitFor();
+        return new JSONObject(response.toString());
     }
 }
+
