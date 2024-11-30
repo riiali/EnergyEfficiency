@@ -2,7 +2,6 @@ package org.energyCons;
 
 import org.energyCons.NoVisitor.WithoutVisitorPattern;
 import org.energyCons.Visitor.VisitorPattern;
-import org.json.JSONObject;
 
 import java.io.BufferedReader;
 import java.io.FileWriter;
@@ -32,7 +31,7 @@ public class Main {
             System.out.println("Running Validator...");
             double totalValidatorConsumption = runPattern("Validator", () -> VisitorPattern.sum(numbers), writer, iterations);
 
-            //resetShellyEnergy();
+            // resetShellyEnergy();
 
             System.out.println("Running NonValidator...");
             double totalNonValidatorConsumption = runPattern("NonValidator", () -> WithoutVisitorPattern.sum(numbers), writer, iterations);
@@ -50,17 +49,18 @@ public class Main {
         for (int i = 1; i <= iterations; i++) {
             System.out.println("Iteration: " + i);
 
-            JSONObject startData = getShellyData();
+            String startData = getShellyData();
             task.run();
-            JSONObject endData = getShellyData();
+            String endData = getShellyData();
 
-            double apower = endData.getJSONObject("switch:0").getDouble("apower");
-            double voltage = endData.getJSONObject("switch:0").getDouble("voltage");
-            double current = endData.getJSONObject("switch:0").getDouble("current");
-            double aenergyTotal = endData.getJSONObject("switch:0").getJSONObject("aenergy").getDouble("total");
-            String aenergyByMinute = endData.getJSONObject("switch:0").getJSONObject("aenergy").getJSONArray("by_minute").toString();
+            double apower = parseDoubleFromJson(endData, "\"apower\":");
+            double voltage = parseDoubleFromJson(endData, "\"voltage\":");
+            double current = parseDoubleFromJson(endData, "\"current\":");
+            double aenergyTotal = parseDoubleFromJson(endData, "\"total\":");
+            String aenergyByMinute = parseArrayFromJson(endData, "\"by_minute\":");
 
-            double iterationConsumption = aenergyTotal - startData.getJSONObject("switch:0").getJSONObject("aenergy").getDouble("total");
+            double startTotalEnergy = parseDoubleFromJson(startData, "\"total\":");
+            double iterationConsumption = aenergyTotal - startTotalEnergy;
             totalConsumption += iterationConsumption;
 
             writer.append(patternName + ",");
@@ -77,14 +77,7 @@ public class Main {
         return totalConsumption;
     }
 
-    private static void resetShellyEnergy() throws IOException, InterruptedException {
-        String command = "curl -s http://" + SHELLY_IP + "/rpc/Shelly.ResetTotalEnergy";
-        Process process = Runtime.getRuntime().exec(command);
-        process.waitFor();
-        System.out.println("Shelly energy reset.");
-    }
-
-    private static JSONObject getShellyData() throws IOException, InterruptedException {
+    private static String getShellyData() throws IOException, InterruptedException {
         String command = "curl -s http://" + SHELLY_IP + "/rpc/Shelly.GetStatus";
 
         Process process = Runtime.getRuntime().exec(command);
@@ -97,7 +90,21 @@ public class Main {
         }
 
         process.waitFor();
-        return new JSONObject(response.toString());
+        return response.toString();
+    }
+
+    private static double parseDoubleFromJson(String json, String key) {
+        int startIndex = json.indexOf(key) + key.length();
+        int endIndex = json.indexOf(",", startIndex);
+        if (endIndex == -1) {
+            endIndex = json.indexOf("}", startIndex); // Handle last element case
+        }
+        return Double.parseDouble(json.substring(startIndex, endIndex).trim());
+    }
+
+    private static String parseArrayFromJson(String json, String key) {
+        int startIndex = json.indexOf(key) + key.length();
+        int endIndex = json.indexOf("]", startIndex) + 1; // Include the closing bracket
+        return json.substring(startIndex, endIndex).trim();
     }
 }
-
