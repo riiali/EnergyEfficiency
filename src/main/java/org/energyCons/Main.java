@@ -2,45 +2,65 @@ package org.energyCons;
 
 import org.energyCons.NoVisitor.WithoutVisitorPattern;
 import org.energyCons.Visitor.VisitorPattern;
+import org.json.JSONObject;
 
-import java.io.BufferedReader;
 import java.io.FileWriter;
 import java.io.IOException;
-import java.io.InputStreamReader;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 
 public class Main {
-    private static final String SHELLY_IP = "192.168.1.182"; // Shelly Plug IP address
+    private static final String SHELLY_IP = "192.168.1.183"; // Shelly Plug IP address
+    private static final HttpClient HTTP_CLIENT = HttpClient.newHttpClient();
 
     public static void main(String[] args) throws IOException, InterruptedException {
-        int iterations = 1000;
+        int iterations = 5;
         int numNumbers = 1000;
         Random random = new Random();
-        String fileName = "energy_shelly_results.csv";
-        List<Integer> numbers = new ArrayList<>();
 
+        List<Integer> numbers = new ArrayList<>();
         for (int i = 0; i < numNumbers; i++) {
             numbers.add(random.nextInt(100));
         }
 
-        try (FileWriter writer = new FileWriter(fileName)) {
-            writer.append("Pattern,Iteration,Apower (W),Voltage (V),Current (A),Aenergy Total (kWh),Aenergy By Minute\n");
+        try (FileWriter validatorWriter = new FileWriter("validator_consumption.csv");
+             FileWriter nonValidatorWriter = new FileWriter("non_validator_consumption.csv");
+             FileWriter totalWriter = new FileWriter("total_consumption.csv")) {
+
+            // Write CSV headers
+            writeHeaders(validatorWriter);
+            writeHeaders(nonValidatorWriter);
+            writeTotalHeaders(totalWriter);
 
             System.out.println("Running Validator...");
-            double totalValidatorConsumption = runPattern("Validator", () -> VisitorPattern.sum(numbers), writer, iterations);
-
-            // resetShellyEnergy();
+            double totalValidatorConsumption = runPattern(
+                    "Validator",
+                    () -> VisitorPattern.sum(numbers),
+                    validatorWriter,
+                    iterations
+            );
 
             System.out.println("Running NonValidator...");
-            double totalNonValidatorConsumption = runPattern("NonValidator", () -> WithoutVisitorPattern.sum(numbers), writer, iterations);
+            double totalNonValidatorConsumption = runPattern(
+                    "NonValidator",
+                    () -> WithoutVisitorPattern.sum(numbers),
+                    nonValidatorWriter,
+                    iterations
+            );
 
-            System.out.println("Total Validator Consumption: " + totalValidatorConsumption + " mW");
-            System.out.println("Total NonValidator Consumption: " + totalNonValidatorConsumption + " mW");
+            // Write total consumption
+            totalWriter.append("Pattern;Total Consumption (Wh)\n");
+            totalWriter.append("Validator;" + totalValidatorConsumption + "\n");
+            totalWriter.append("NonValidator;" + totalNonValidatorConsumption + "\n");
+
+            System.out.println("Total Validator Consumption: " + totalValidatorConsumption + " kWh");
+            System.out.println("Total NonValidator Consumption: " + totalNonValidatorConsumption + " kWh");
         }
-
-        System.out.println("Results saved to " + fileName);
     }
 
     private static double runPattern(String patternName, Runnable task, FileWriter writer, int iterations) throws IOException, InterruptedException {
@@ -49,62 +69,53 @@ public class Main {
         for (int i = 1; i <= iterations; i++) {
             System.out.println("Iteration: " + i);
 
-            String startData = getShellyData();
+            JSONObject startData = getShellyData();
             task.run();
-            String endData = getShellyData();
+            Thread.sleep(1000); // Delay to ensure energy data is updated
+            JSONObject endData = getShellyData();
 
-            double apower = parseDoubleFromJson(endData, "\"apower\":");
-            double voltage = parseDoubleFromJson(endData, "\"voltage\":");
-            double current = parseDoubleFromJson(endData, "\"current\":");
-            double aenergyTotal = parseDoubleFromJson(endData, "\"total\":");
-            String aenergyByMinute = parseArrayFromJson(endData, "\"by_minute\":");
+            // Extract nested data from switch:0
+            JSONObject startSwitch = startData.getJSONObject("switch:0");
+            JSONObject endSwitch = endData.getJSONObject("switch:0");
 
-            double startTotalEnergy = parseDoubleFromJson(startData, "\"total\":");
-            double iterationConsumption = aenergyTotal - startTotalEnergy;
+            double apower = startSwitch.optDouble("apower", 0.0); // Watt
+            double voltage = startSwitch.optDouble("voltage", 0.0); // Volt
+            double current = startSwitch.optDouble("current", 0.0); // Ampere
+            double startTotalEnergy = startSwitch.getJSONObject("aenergy").optDouble("total", 0.0); // Convert Wh
+            double endTotalEnergy = endSwitch.getJSONObject("aenergy").optDouble("total", 0.0); // Convert Wh
+            double iterationConsumption = endTotalEnergy - startTotalEnergy;
+
             totalConsumption += iterationConsumption;
 
-            writer.append(patternName + ",");
-            writer.append(i + ",");
-            writer.append(String.format("%.2f", apower) + ",");
-            writer.append(String.format("%.2f", voltage) + ",");
-            writer.append(String.format("%.2f", current) + ",");
-            writer.append(String.format("%.3f", aenergyTotal) + ",");
-            writer.append(aenergyByMinute + "\n");
+            writer.append(patternName).append(";")
+                    .append(String.valueOf(i)).append(";")
+                    .append(String.valueOf(apower)).append(";")
+                    .append(String.valueOf(voltage)).append(";")
+                    .append(String.valueOf(current)).append(";")
+                    .append(String.valueOf(endTotalEnergy)).append(";")
+                    .append(String.valueOf(iterationConsumption)).append("\n");
 
-            System.out.println("Iteration Consumption: " + iterationConsumption + " mW");
+            System.out.println("Iteration Consumption: " + iterationConsumption + " kWh");
         }
 
         return totalConsumption;
     }
 
-    private static String getShellyData() throws IOException, InterruptedException {
-        String command = "curl -s http://" + SHELLY_IP + "/rpc/Shelly.GetStatus";
+    private static JSONObject getShellyData() throws IOException, InterruptedException {
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create("http://" + SHELLY_IP + "/rpc/Shelly.GetStatus"))
+                .GET()
+                .build();
 
-        Process process = Runtime.getRuntime().exec(command);
-        BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
-
-        StringBuilder response = new StringBuilder();
-        String line;
-        while ((line = reader.readLine()) != null) {
-            response.append(line);
-        }
-
-        process.waitFor();
-        return response.toString();
+        HttpResponse<String> response = HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
+        return new JSONObject(response.body());
     }
 
-    private static double parseDoubleFromJson(String json, String key) {
-        int startIndex = json.indexOf(key) + key.length();
-        int endIndex = json.indexOf(",", startIndex);
-        if (endIndex == -1) {
-            endIndex = json.indexOf("}", startIndex); // Handle last element case
-        }
-        return Double.parseDouble(json.substring(startIndex, endIndex).trim());
+    private static void writeHeaders(FileWriter writer) throws IOException {
+        writer.append("Pattern;Iteration;Apower (W);Voltage (V);Current (A);Total Energy (Wh);Iteration Consumption (Wh)\n");
     }
 
-    private static String parseArrayFromJson(String json, String key) {
-        int startIndex = json.indexOf(key) + key.length();
-        int endIndex = json.indexOf("]", startIndex) + 1; // Include the closing bracket
-        return json.substring(startIndex, endIndex).trim();
+    private static void writeTotalHeaders(FileWriter writer) throws IOException {
+        writer.append("Pattern;Total Consumption (kWh)\n");
     }
 }
